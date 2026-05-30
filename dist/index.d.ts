@@ -7,7 +7,9 @@ import type { Plugin } from "@opencode-ai/plugin";
  * instead of one trace per `ai.streamText` invocation.
  *
  * Nesting works by:
- *   1. Starting a `session.turn` span on `chat.message` (per sessionID).
+ *   1. Starting a root span on `chat.message` (per sessionID). Span name is
+ *      configurable via `LANGFUSE_ROOT_SPAN_NAME` (default: `brainforge-work`)
+ *      so the Langfuse trace title can match the host product brand.
  *   2. Using AsyncLocalStorage.enterWith() to install that span as the
  *      active OTel context for opencode's downstream async chain so
  *      every AI SDK + tool span emitted afterwards inherits it as parent.

@@ -9,7 +9,9 @@ import { trace, context as otelContext } from "@opentelemetry/api";
  * instead of one trace per `ai.streamText` invocation.
  *
  * Nesting works by:
- *   1. Starting a `session.turn` span on `chat.message` (per sessionID).
+ *   1. Starting a root span on `chat.message` (per sessionID). Span name is
+ *      configurable via `LANGFUSE_ROOT_SPAN_NAME` (default: `brainforge-work`)
+ *      so the Langfuse trace title can match the host product brand.
  *   2. Using AsyncLocalStorage.enterWith() to install that span as the
  *      active OTel context for opencode's downstream async chain so
  *      every AI SDK + tool span emitted afterwards inherits it as parent.
@@ -20,6 +22,7 @@ export const LangfusePlugin = async ({ client }) => {
     const secretKey = process.env.LANGFUSE_SECRET_KEY;
     const baseUrl = process.env.LANGFUSE_BASEURL ?? "https://cloud.langfuse.com";
     const environment = process.env.LANGFUSE_ENVIRONMENT ?? "development";
+    const rootSpanName = process.env.LANGFUSE_ROOT_SPAN_NAME ?? "brainforge-work";
     const log = (level, message) => {
         client.app.log({
             body: { service: "langfuse-otel", level, message },
@@ -38,7 +41,7 @@ export const LangfusePlugin = async ({ client }) => {
         // Without this, the default filter only passes spans with gen_ai.* attrs or from
         // known instrumentors and silently drops our manually-created parent span.
         shouldExportSpan: ({ otelSpan }) => {
-            if (otelSpan.name === "session.turn")
+            if (otelSpan.name === rootSpanName)
                 return true;
             const attrs = otelSpan.attributes ?? {};
             for (const key of Object.keys(attrs)) {
@@ -70,7 +73,7 @@ export const LangfusePlugin = async ({ client }) => {
     const ensureParent = (sessionID) => {
         let span = sessionParents.get(sessionID);
         if (!span) {
-            span = tracer.startSpan("session.turn", {
+            span = tracer.startSpan(rootSpanName, {
                 attributes: { "session.id": sessionID },
             });
             sessionParents.set(sessionID, span);
