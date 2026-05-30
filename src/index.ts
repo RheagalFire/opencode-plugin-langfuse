@@ -42,6 +42,23 @@ export const LangfusePlugin: Plugin = async ({ client }) => {
     secretKey,
     baseUrl,
     environment,
+    // Override default filter: accept our session.turn parent + any LLM-related spans.
+    // Without this, the default filter only passes spans with gen_ai.* attrs or from
+    // known instrumentors and silently drops our manually-created parent span.
+    shouldExportSpan: ({ otelSpan }) => {
+      if (otelSpan.name === "session.turn") return true;
+      const attrs = otelSpan.attributes ?? {};
+      for (const key of Object.keys(attrs)) {
+        if (
+          key.startsWith("gen_ai.") ||
+          key.startsWith("ai.") ||
+          key.startsWith("langfuse.")
+        ) {
+          return true;
+        }
+      }
+      return false;
+    },
   });
 
   const sdk = new NodeSDK({
