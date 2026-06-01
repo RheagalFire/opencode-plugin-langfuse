@@ -14,8 +14,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "bun run build",
-    "prepare": "husky"
+    "prepublishOnly": "bun run build"
   },
   "keywords": [
     "opencode",
