@@ -116,6 +116,26 @@ export const LangfusePlugin: Plugin = async ({ client }) => {
     }
   };
 
+  // Extract concatenated text from a list of opencode `Part` objects.
+  // Used for both user input (chat.message hook) and assistant output
+  // (fetched via client.session.messages on session.idle).
+  const extractText = (parts: unknown): string | undefined => {
+    if (!Array.isArray(parts)) return undefined;
+    const texts: string[] = [];
+    for (const p of parts) {
+      if (
+        p &&
+        typeof p === "object" &&
+        (p as { type?: unknown }).type === "text" &&
+        typeof (p as { text?: unknown }).text === "string"
+      ) {
+        texts.push((p as { text: string }).text);
+      }
+    }
+    const joined = texts.join("\n").trim();
+    return joined.length > 0 ? joined : undefined;
+  };
+
   return {
     config: async (config) => {
       if (!config.experimental?.openTelemetry) {
@@ -125,9 +145,16 @@ export const LangfusePlugin: Plugin = async ({ client }) => {
         );
       }
     },
-    "chat.message": async (input) => {
+    "chat.message": async (input, output) => {
       // New user turn → ensure a parent span exists and is active in our context.
       activateParent(input.sessionID);
+      // Capture the user's prompt as the trace input. Langfuse promotes this
+      // span attribute to the trace-level input field in its UI.
+      const userText = extractText(output?.parts);
+      if (userText) {
+        const parent = sessionParents.get(input.sessionID);
+        parent?.setAttribute("langfuse.observation.input", userText);
+      }
     },
     "chat.params": async (input) => {
       // Before each AI SDK call: pin parent context so streamText spans nest.
@@ -142,6 +169,33 @@ export const LangfusePlugin: Plugin = async ({ client }) => {
         const sid = (event as { properties?: { sessionID?: string } })
           .properties?.sessionID;
         if (sid) {
+          // Before ending the parent: fetch the latest assistant message text
+          // and attach it as the trace output. Tolerate any failure here so we
+          // never block the flush on transient SDK errors.
+          try {
+            const parent = sessionParents.get(sid);
+            if (parent) {
+              const res = await client.session.messages({ path: { id: sid } });
+              const items = (res as { data?: Array<{ info: { role: string }; parts: unknown }> })
+                .data;
+              if (Array.isArray(items)) {
+                for (let i = items.length - 1; i >= 0; i--) {
+                  if (items[i]?.info?.role === "assistant") {
+                    const text = extractText(items[i].parts);
+                    if (text) {
+                      parent.setAttribute("langfuse.observation.output", text);
+                    }
+                    break;
+                  }
+                }
+              }
+            }
+          } catch (err) {
+            log(
+              "warn",
+              `Failed to fetch session output for trace: ${(err as Error).message}`
+            );
+          }
           endParent(sid);
         }
         log("info", "Flushing OTEL spans before idle");
