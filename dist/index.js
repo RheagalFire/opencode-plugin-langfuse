@@ -23,6 +23,12 @@ export const LangfusePlugin = async ({ client }) => {
     const baseUrl = process.env.LANGFUSE_BASEURL ?? "https://cloud.langfuse.com";
     const environment = process.env.LANGFUSE_ENVIRONMENT ?? "development";
     const rootSpanName = process.env.LANGFUSE_ROOT_SPAN_NAME ?? "brainforge-work";
+    // Optional user attribution: set this to the dev's email so local-dev traces
+    // group by user in Langfuse (the orchestrator deployment derives it from the
+    // workspace owner instead; this env is for standalone/CLI use).
+    const userId = process.env.LANGFUSE_USER_ID?.trim() ||
+        process.env.LANGFUSE_TRACING_USER?.trim() ||
+        undefined;
     const log = (level, message) => {
         client.app.log({
             body: { service: "langfuse-otel", level, message },
@@ -104,9 +110,11 @@ export const LangfusePlugin = async ({ client }) => {
     const ensureParent = (sessionID) => {
         let span = sessionParents.get(sessionID);
         if (!span) {
-            span = tracer.startSpan(rootSpanName, {
-                attributes: { "session.id": sessionID },
-            });
+            const attributes = { "session.id": sessionID };
+            // Langfuse maps the `user.id` OTel attribute to the trace userId.
+            if (userId)
+                attributes["user.id"] = userId;
+            span = tracer.startSpan(rootSpanName, { attributes });
             sessionParents.set(sessionID, span);
         }
         return span;
