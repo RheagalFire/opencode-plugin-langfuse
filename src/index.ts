@@ -64,12 +64,49 @@ export const LangfusePlugin: Plugin = async ({ client }) => {
     },
   });
 
-  const sdk = new NodeSDK({
-    spanProcessors: [processor],
-  });
+  // If a TracerProvider is already registered globally (e.g. opencode set
+  // one up because `experimental.openTelemetry: true` was in config and
+  // OTEL_EXPORTER_OTLP_ENDPOINT is in the env), `new NodeSDK().start()`
+  // would silently fail to replace it — our LangfuseSpanProcessor would
+  // never see any spans. Detect that case and attach our processor to the
+  // existing provider via the SDK-level `addSpanProcessor` API.
+  let registrationMode = "unknown";
+  try {
+    const apiProvider = trace.getTracerProvider() as unknown as {
+      addSpanProcessor?: (sp: unknown) => void;
+      getDelegate?: () => unknown;
+      constructor?: { name?: string };
+    };
+    const providerName = apiProvider.constructor?.name ?? "<unknown>";
 
-  sdk.start();
-  log("info", `OTEL tracing initialized → ${baseUrl}`);
+    let target: { addSpanProcessor?: (sp: unknown) => void } | null = null;
+    if (typeof apiProvider.addSpanProcessor === "function") {
+      target = apiProvider;
+    } else if (typeof apiProvider.getDelegate === "function") {
+      const delegate = apiProvider.getDelegate() as {
+        addSpanProcessor?: (sp: unknown) => void;
+        constructor?: { name?: string };
+      };
+      if (delegate && typeof delegate.addSpanProcessor === "function") {
+        target = delegate;
+      }
+    }
+
+    if (target?.addSpanProcessor) {
+      target.addSpanProcessor(processor);
+      registrationMode = `attached_to_existing(${providerName})`;
+    } else {
+      const sdk = new NodeSDK({ spanProcessors: [processor] });
+      sdk.start();
+      registrationMode = `new_node_sdk(prevProvider=${providerName})`;
+    }
+  } catch (err) {
+    const sdk = new NodeSDK({ spanProcessors: [processor] });
+    sdk.start();
+    registrationMode = `new_node_sdk_fallback(err=${(err as Error).message})`;
+  }
+
+  log("info", `OTEL tracing initialized → ${baseUrl} mode=${registrationMode}`);
 
   const tracer = trace.getTracer("opencode-plugin-langfuse");
   const sessionParents = new Map<string, Span>();

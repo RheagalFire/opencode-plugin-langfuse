@@ -54,11 +54,42 @@ export const LangfusePlugin = async ({ client }) => {
             return false;
         },
     });
-    const sdk = new NodeSDK({
-        spanProcessors: [processor],
-    });
-    sdk.start();
-    log("info", `OTEL tracing initialized → ${baseUrl}`);
+    // If a TracerProvider is already registered globally (e.g. opencode set
+    // one up because `experimental.openTelemetry: true` was in config and
+    // OTEL_EXPORTER_OTLP_ENDPOINT is in the env), `new NodeSDK().start()`
+    // would silently fail to replace it — our LangfuseSpanProcessor would
+    // never see any spans. Detect that case and attach our processor to the
+    // existing provider via the SDK-level `addSpanProcessor` API.
+    let registrationMode = "unknown";
+    try {
+        const apiProvider = trace.getTracerProvider();
+        const providerName = apiProvider.constructor?.name ?? "<unknown>";
+        let target = null;
+        if (typeof apiProvider.addSpanProcessor === "function") {
+            target = apiProvider;
+        }
+        else if (typeof apiProvider.getDelegate === "function") {
+            const delegate = apiProvider.getDelegate();
+            if (delegate && typeof delegate.addSpanProcessor === "function") {
+                target = delegate;
+            }
+        }
+        if (target?.addSpanProcessor) {
+            target.addSpanProcessor(processor);
+            registrationMode = `attached_to_existing(${providerName})`;
+        }
+        else {
+            const sdk = new NodeSDK({ spanProcessors: [processor] });
+            sdk.start();
+            registrationMode = `new_node_sdk(prevProvider=${providerName})`;
+        }
+    }
+    catch (err) {
+        const sdk = new NodeSDK({ spanProcessors: [processor] });
+        sdk.start();
+        registrationMode = `new_node_sdk_fallback(err=${err.message})`;
+    }
+    log("info", `OTEL tracing initialized → ${baseUrl} mode=${registrationMode}`);
     const tracer = trace.getTracer("opencode-plugin-langfuse");
     const sessionParents = new Map();
     // Reach into the AsyncLocalStorage backing the global ContextManager so we
