@@ -1,6 +1,7 @@
 import { LangfuseSpanProcessor } from "@langfuse/otel";
 import type { Plugin } from "@opencode-ai/plugin";
 import { NodeSDK } from "@opentelemetry/sdk-node";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import { trace, context as otelContext, type Span } from "@opentelemetry/api";
 
 /**
@@ -77,6 +78,13 @@ export const LangfusePlugin: Plugin = async ({ client }) => {
   // would silently fail to replace it — our LangfuseSpanProcessor would
   // never see any spans. Detect that case and attach our processor to the
   // existing provider via the SDK-level `addSpanProcessor` API.
+  // Set user.id at the RESOURCE level (not just the root span) so it wins over
+  // opencode's auto-detected `process.owner` (the OS username), which Langfuse
+  // otherwise uses as the trace userId. Applied to every span the SDK exports.
+  const sdkResource = userId
+    ? resourceFromAttributes({ "user.id": userId })
+    : undefined;
+
   let registrationMode = "unknown";
   try {
     const apiProvider = trace.getTracerProvider() as unknown as {
@@ -103,12 +111,12 @@ export const LangfusePlugin: Plugin = async ({ client }) => {
       target.addSpanProcessor(processor);
       registrationMode = `attached_to_existing(${providerName})`;
     } else {
-      const sdk = new NodeSDK({ spanProcessors: [processor] });
+      const sdk = new NodeSDK({ resource: sdkResource, spanProcessors: [processor] });
       sdk.start();
       registrationMode = `new_node_sdk(prevProvider=${providerName})`;
     }
   } catch (err) {
-    const sdk = new NodeSDK({ spanProcessors: [processor] });
+    const sdk = new NodeSDK({ resource: sdkResource, spanProcessors: [processor] });
     sdk.start();
     registrationMode = `new_node_sdk_fallback(err=${(err as Error).message})`;
   }
