@@ -78,12 +78,21 @@ export const LangfusePlugin: Plugin = async ({ client }) => {
   // would silently fail to replace it — our LangfuseSpanProcessor would
   // never see any spans. Detect that case and attach our processor to the
   // existing provider via the SDK-level `addSpanProcessor` API.
-  // Set user.id at the RESOURCE level (not just the root span) so it wins over
-  // opencode's auto-detected `process.owner` (the OS username), which Langfuse
-  // otherwise uses as the trace userId. Applied to every span the SDK exports.
-  const sdkResource = userId
-    ? resourceFromAttributes({ "user.id": userId })
-    : undefined;
+  // Langfuse derives the trace userId from the OTel resource's `process.owner`
+  // (the OS username), which overrides span-level `user.id`. So when a userId is
+  // configured we (a) set user.id on the resource AND (b) disable the default
+  // resource detectors so `process.owner` is never populated — leaving user.id
+  // as the only user identity Langfuse can pick up.
+  const sdkOpts: ConstructorParameters<typeof NodeSDK>[0] = userId
+    ? {
+        resource: resourceFromAttributes({
+          "user.id": userId,
+          "service.name": "opencode",
+        }),
+        resourceDetectors: [],
+        spanProcessors: [processor],
+      }
+    : { spanProcessors: [processor] };
 
   let registrationMode = "unknown";
   try {
@@ -111,12 +120,12 @@ export const LangfusePlugin: Plugin = async ({ client }) => {
       target.addSpanProcessor(processor);
       registrationMode = `attached_to_existing(${providerName})`;
     } else {
-      const sdk = new NodeSDK({ resource: sdkResource, spanProcessors: [processor] });
+      const sdk = new NodeSDK(sdkOpts);
       sdk.start();
       registrationMode = `new_node_sdk(prevProvider=${providerName})`;
     }
   } catch (err) {
-    const sdk = new NodeSDK({ resource: sdkResource, spanProcessors: [processor] });
+    const sdk = new NodeSDK(sdkOpts);
     sdk.start();
     registrationMode = `new_node_sdk_fallback(err=${(err as Error).message})`;
   }
